@@ -1,7 +1,7 @@
 # Get-NetUsers.ps1
 # Script to list local/remote Windows users, group memberships, and active sessions.
 # Supports both CLI output mode and interactive TUI mode (PS_UI_Blueprint).
-# Version 1.2.0 - Features connection history, CSV/MD exports, Esc fix, and resize safety.
+# Version 1.3.0 - Connection history filtered per network, displaying HostName + IP.
 
 param(
     [Parameter(Mandatory = $false, HelpMessage = "Enter the target ComputerName or IP Address (e.g. 192.168.1.47)")]
@@ -35,14 +35,82 @@ if ($runTui) {
 # Paths
 $historyPath = "d:\Users\joty79\scripts\netuser\history.json"
 
+# Network Identity Check
+function Get-CurrentNetworkIdentity {
+    $profileName = "Unknown Network"
+    $gatewayMac = "00-00-00-00-00-00"
+    $subnetId = "0.0.0.0"
+
+    try {
+        $profile = Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object IPv4Connectivity -eq 'Internet' | Select-Object -First 1
+        if ($null -eq $profile) {
+            $profile = Get-NetConnectionProfile -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
+        if ($null -ne $profile) {
+            $profileName = $profile.Name
+        }
+    } catch {}
+
+    try {
+        $routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue
+        if ($routes) {
+            $gatewayIp = $routes[0].NextHop
+            $neighbor = Get-NetNeighbor -IPAddress $gatewayIp -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($neighbor -and $neighbor.LinkLayerAddress) {
+                $gatewayMac = $neighbor.LinkLayerAddress.ToUpper()
+            }
+        }
+    } catch {}
+
+    try {
+        $ipInfo = $null
+        if ($null -ne $profile) {
+            $ipInfo = Get-NetIPAddress -InterfaceIndex $profile.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
+        if ($null -eq $ipInfo) {
+            $ipInfo = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.InterfaceAlias -notmatch 'Loopback|vEthernet' } |
+                Select-Object -First 1
+        }
+        if ($ipInfo -and $ipInfo.IPAddress -match '^(\d+\.\d+\.\d+)\.\d+$') {
+            $subnetId = $Matches[1]
+        }
+    } catch {}
+
+    $networkId = "$profileName|$gatewayMac|$subnetId"
+    return [PSCustomObject]@{
+        NetworkId   = $networkId
+        ProfileName = $profileName
+        GatewayMac  = $gatewayMac
+        SubnetId    = $subnetId
+    }
+}
+
 # Connection History Management
 function Get-ConnectionHistory {
     if (Test-Path -LiteralPath $historyPath) {
         try {
             $content = Get-Content -LiteralPath $historyPath -Raw -ErrorAction Stop
             $history = ConvertFrom-Json $content
-            if ($history -is [Array]) { return @($history) }
-            return @($history)
+            $list = [System.Collections.Generic.List[object]]::new()
+            if ($history) {
+                foreach ($h in @($history)) {
+                    $comp = if ($h.ComputerName) { $h.ComputerName } else { "Unknown" }
+                    $ip = if ($h.IPAddress) { $h.IPAddress } else { $comp }
+                    $user = if ($h.UserName) { $h.UserName } else { "Administrator" }
+                    $netId = if ($h.NetworkId) { $h.NetworkId } else { "" }
+                    $time = if ($h.LastConnected) { $h.LastConnected } else { "" }
+                    
+                    $list.Add([PSCustomObject]@{
+                        ComputerName  = $comp
+                        IPAddress     = $ip
+                        UserName      = $user
+                        NetworkId     = $netId
+                        LastConnected = $time
+                    })
+                }
+            }
+            return @($list)
         } catch {
             return @()
         }
@@ -53,22 +121,29 @@ function Get-ConnectionHistory {
 function Add-ConnectionHistoryEntry {
     param(
         [string]$ComputerName,
+        [string]$IPAddress,
         [string]$UserName
     )
     
+    $netId = (Get-CurrentNetworkIdentity).NetworkId
     $history = Get-ConnectionHistory
-    # Remove existing entry if it matches
-    $history = $history | Where-Object { $_.ComputerName.ToLower() -ne $ComputerName.ToLower() }
+    
+    # Remove existing entry for this specific IP on this network
+    $history = $history | Where-Object { 
+        -not ($_.IPAddress -eq $IPAddress -and $_.NetworkId -eq $netId)
+    }
     
     $newEntry = [PSCustomObject]@{
         ComputerName  = $ComputerName
+        IPAddress     = $IPAddress
         UserName      = $UserName
+        NetworkId     = $netId
         LastConnected = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     }
     
     $updatedHistory = @($newEntry) + $history
-    if ($updatedHistory.Count -gt 10) {
-        $updatedHistory = $updatedHistory[0..9]
+    if ($updatedHistory.Count -gt 15) {
+        $updatedHistory = $updatedHistory[0..14]
     }
     
     try {
@@ -444,7 +519,7 @@ function Show-ScrollableText {
                     $coloredText = $coloredText -replace '\bFalse\b', "$($_C.Fail)False$($_C.Reset)"
                 }
                 
-                Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset) $coloredText $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
+                Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$$_C.Reset) $coloredText $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
             }
             
             # Pad empty vertical space
@@ -452,7 +527,7 @@ function Show-ScrollableText {
             if ($printedCount -lt $maxVisibleLines) {
                 for ($i = $printedCount; $i -lt $maxVisibleLines; $i++) {
                     $emptyPad = ' ' * $innerWidth
-                    Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset) $emptyPad $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
+                    Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$$_C.Reset) $emptyPad $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
                 }
             }
             
@@ -609,8 +684,8 @@ function Run-RemoteUsersFlow {
         
         $userData = Invoke-Command -Session $session -ScriptBlock $scriptBlock -ErrorAction Stop
         
-        # Save connection to history on success
-        Add-ConnectionHistoryEntry -ComputerName $TargetComputer -UserName $username
+        # Save connection to history on success, including name and IP Address
+        Add-ConnectionHistoryEntry -ComputerName $TargetName -IPAddress $TargetComputer -UserName $username
         
     } catch {
         $connectionError = $_.Exception.Message
@@ -692,8 +767,14 @@ function Invoke-NetUsersTui {
             Lock-ViewportToWindow
             $width = Get-UiWidth
             
-            # Load dynamic history
-            $history = Get-ConnectionHistory
+            # Load active network identity
+            $networkInfo = Get-CurrentNetworkIdentity
+            $currentNetworkId = $networkInfo.NetworkId
+            $networkName = $networkInfo.ProfileName
+            
+            # Filter connection history for current network
+            $allHistory = Get-ConnectionHistory
+            $history = @($allHistory | Where-Object { $_.NetworkId -eq $currentNetworkId })
             
             # Rebuild menu items and actions list dynamically
             $menuOptions = [System.Collections.Generic.List[string]]::new()
@@ -713,8 +794,13 @@ function Invoke-NetUsersTui {
                 $actions.Add([PSCustomObject]@{ Type = 'Header'; Label = "--- Connection History ---" })
                 
                 foreach ($h in $history) {
-                    $menuOptions.Add("  $($h.ComputerName) (user: $($h.UserName))")
-                    $actions.Add([PSCustomObject]@{ Type = 'HistoryEntry'; Data = $h; Label = "  $($h.ComputerName) (user: $($h.UserName))" })
+                    $displayName = if ($h.ComputerName.ToLower() -eq $h.IPAddress.ToLower() -or [string]::IsNullOrEmpty($h.ComputerName)) {
+                        "  $($h.IPAddress) (user: $($h.UserName))"
+                    } else {
+                        "  $($h.ComputerName) ($($h.IPAddress)) (user: $($h.UserName))"
+                    }
+                    $menuOptions.Add($displayName)
+                    $actions.Add([PSCustomObject]@{ Type = 'HistoryEntry'; Data = $h; Label = $displayName })
                 }
             }
             
@@ -732,7 +818,7 @@ function Invoke-NetUsersTui {
             }
             
             $frame = New-UiFrame
-            Add-UiFrameBanner -Frame $frame -Title "netuser TUI Control Panel" -Subtitle "Local & Remote User Check Utility" -Width $width
+            Add-UiFrameBanner -Frame $frame -Title "netuser TUI Control Panel" -Subtitle "Local & Remote User Check Utility | Active Network: $networkName" -Width $width
             Add-UiFrameSection -Frame $frame -Title "Main Menu" -Width $width
             
             for ($i = 0; $i -lt $menuOptions.Count; $i++) {
@@ -741,8 +827,6 @@ function Invoke-NetUsersTui {
                 } else {
                     if ($actions[$i].Type -eq 'Header') {
                         Add-UiFrameLine -Frame $frame -Text "  $($_C.Info)$($menuOptions[$i])$($_C.Reset)$($_C.EraseLn)"
-                    } elseif ($actions[$i].Type -eq 'HistoryEntry') {
-                        Add-UiFrameLine -Frame $frame -Text "    $($_C.White)$($menuOptions[$i])$($_C.Reset)$($_C.EraseLn)"
                     } else {
                         Add-UiFrameLine -Frame $frame -Text "    $($_C.White)$($menuOptions[$i])$($_C.Reset)$($_C.EraseLn)"
                     }
@@ -795,7 +879,7 @@ function Invoke-NetUsersTui {
                         'Scan' { Invoke-LanScanFlow }
                         'ConnectNew' { Connect-RemotePcFlow }
                         'HistoryEntry' {
-                            Run-RemoteUsersFlow -TargetComputer $action.Data.ComputerName -TargetName $action.Data.ComputerName -DefaultUser $action.Data.UserName
+                            Run-RemoteUsersFlow -TargetComputer $action.Data.IPAddress -TargetName $action.Data.ComputerName -DefaultUser $action.Data.UserName
                         }
                         'Exit' { return }
                     }

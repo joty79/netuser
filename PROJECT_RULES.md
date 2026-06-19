@@ -36,3 +36,17 @@ Durable rules, guidelines, and decision logs for the netuser query and verificat
   - [PROJECT_RULES.md](file:///d:/Users/joty79/scripts/netuser/PROJECT_RULES.md)
   - [CHANGELOG.md](file:///d:/Users/joty79/scripts/netuser/CHANGELOG.md)
 - **Validation/tests run**: Local manual run, syntax check, and mock connection tests.
+
+### Entry - 2026-06-19 (Network-Scoped History Isolation & Display Name + IP)
+- **Date**: 2026-06-19
+- **Problem**: Connection history entries can clash or point to invalid addresses when moving between different physical or logical networks. Additionally, only displaying raw IPs in connection history is confusing.
+- **Root cause**: Dynamic IP networks (like DHCP scopes) reuse the same IP ranges, so connection history must be isolated to prevent connection attempts to incorrect computers.
+- **Guardrail/rule**:
+  - **Network Isolation**: Capture `NetworkId` (ProfileName + GatewayMac + Subnet) using `Get-CurrentNetworkIdentity` and filter connection history display dynamically based on the current active connection.
+  - **Combined Name and IP**: Save resolved hostnames and IP addresses during remote WinRM connections, and display them in history as `HostName (IP) - user: userName`.
+  - **History Schema Migration**: Auto-migrate legacy history records to include default properties dynamically when loaded.
+- **Files affected**:
+  - [Get-NetUsers.ps1](file:///d:/Users/joty79/scripts/netuser/Get-NetUsers.ps1)
+  - [PROJECT_RULES.md](file:///d:/Users/joty79/scripts/netuser/PROJECT_RULES.md)
+  - [CHANGELOG.md](file:///d:/Users/joty79/scripts/netuser/CHANGELOG.md)
+- **Validation/tests run**: Verified network filtering with active gateway identities and mock history structures.
