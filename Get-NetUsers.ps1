@@ -1,6 +1,7 @@
 # Get-NetUsers.ps1
 # Script to list local/remote Windows users, group memberships, and active sessions.
 # Supports both CLI output mode and interactive TUI mode (PS_UI_Blueprint).
+# Version 1.2.0 - Features connection history, CSV/MD exports, Esc fix, and resize safety.
 
 param(
     [Parameter(Mandatory = $false, HelpMessage = "Enter the target ComputerName or IP Address (e.g. 192.168.1.47)")]
@@ -18,7 +19,6 @@ $isRemote = -not [string]::IsNullOrEmpty($ComputerName) -and
             ($ComputerName -ne "127.0.0.1") -and 
             ($ComputerName -ne $env:COMPUTERNAME)
 
-# Load TUI Blueprint if running in interactive/TUI mode
 $runTui = $Interactive -or ($null -eq $PSBoundParameters["ComputerName"] -and $null -eq $PSBoundParameters["Credential"])
 
 if ($runTui) {
@@ -29,6 +29,127 @@ if ($runTui) {
         Write-Warning "Could not find TUI Blueprint at: $blueprintPath"
         Write-Warning "Falling back to standard CLI mode..."
         $runTui = $false
+    }
+}
+
+# Paths
+$historyPath = "d:\Users\joty79\scripts\netuser\history.json"
+
+# Connection History Management
+function Get-ConnectionHistory {
+    if (Test-Path -LiteralPath $historyPath) {
+        try {
+            $content = Get-Content -LiteralPath $historyPath -Raw -ErrorAction Stop
+            $history = ConvertFrom-Json $content
+            if ($history -is [Array]) { return @($history) }
+            return @($history)
+        } catch {
+            return @()
+        }
+    }
+    return @()
+}
+
+function Add-ConnectionHistoryEntry {
+    param(
+        [string]$ComputerName,
+        [string]$UserName
+    )
+    
+    $history = Get-ConnectionHistory
+    # Remove existing entry if it matches
+    $history = $history | Where-Object { $_.ComputerName.ToLower() -ne $ComputerName.ToLower() }
+    
+    $newEntry = [PSCustomObject]@{
+        ComputerName  = $ComputerName
+        UserName      = $UserName
+        LastConnected = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    }
+    
+    $updatedHistory = @($newEntry) + $history
+    if ($updatedHistory.Count -gt 10) {
+        $updatedHistory = $updatedHistory[0..9]
+    }
+    
+    try {
+        $updatedHistory | ConvertTo-Json | Set-Content -LiteralPath $historyPath -Encoding UTF8
+    } catch {}
+}
+
+# CSV/Markdown Data Export
+function Export-UserData {
+    param(
+        [string]$Target,
+        $userData
+    )
+    
+    $exportsDir = "d:\Users\joty79\scripts\netuser\exports"
+    if (-not (Test-Path -LiteralPath $exportsDir)) {
+        $null = New-Item -ItemType Directory -Path $exportsDir -Force
+    }
+    
+    $timestamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
+    
+    # 1. Export to Markdown
+    $mdFile = Join-Path -Path $exportsDir -ChildPath "report_${Target}_$timestamp.md"
+    $sb = [System.Text.StringBuilder]::new()
+    $null = $sb.AppendLine("# User Accounts Report for $Target")
+    $null = $sb.AppendLine("Generated on: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    $null = $sb.AppendLine()
+    
+    $null = $sb.AppendLine("## User Accounts")
+    $null = $sb.AppendLine("| Name | Enabled | Description |")
+    $null = $sb.AppendLine("|---|---|---|")
+    foreach ($u in $userData.Users) {
+        $null = $sb.AppendLine("| $($u.Name) | $($u.Enabled) | $($u.Description) |")
+    }
+    $null = $sb.AppendLine()
+    
+    $null = $sb.AppendLine("## Administrators Group Members")
+    $null = $sb.AppendLine("| Name | Source | Class |")
+    $null = $sb.AppendLine("|---|---|---|")
+    foreach ($m in $userData.Administrators) {
+        $null = $sb.AppendLine("| $($m.Name) | $($m.PrincipalSource) | $($m.ObjectClass) |")
+    }
+    $null = $sb.AppendLine()
+    
+    $null = $sb.AppendLine("## Remote Desktop Users Group Members")
+    $null = $sb.AppendLine("| Name | Source | Class |")
+    $null = $sb.AppendLine("|---|---|---|")
+    foreach ($m in $userData.RdpUsers) {
+        $null = $sb.AppendLine("| $($m.Name) | $($m.PrincipalSource) | $($m.ObjectClass) |")
+    }
+    $null = $sb.AppendLine()
+    
+    $null = $sb.AppendLine("## Active Sessions (quser)")
+    $null = $sb.AppendLine("| Username | Session Name | ID | State | Idle Time | Logon Time |")
+    $null = $sb.AppendLine("|---|---|---|---|---|---|")
+    foreach ($s in $userData.Sessions) {
+        $null = $sb.AppendLine("| $($s.Username) | $($s.SessionName) | $($s.Id) | $($s.State) | $($s.IdleTime) | $($s.LogonTime) |")
+    }
+    
+    $sb.ToString() | Set-Content -LiteralPath $mdFile -Encoding UTF8
+    
+    # 2. Export to CSVs
+    $csvUsers = Join-Path -Path $exportsDir -ChildPath "users_${Target}_$timestamp.csv"
+    $userData.Users | Export-Csv -Path $csvUsers -NoTypeInformation -Encoding UTF8
+    
+    $csvAdmins = Join-Path -Path $exportsDir -ChildPath "admins_${Target}_$timestamp.csv"
+    $userData.Administrators | Export-Csv -Path $csvAdmins -NoTypeInformation -Encoding UTF8
+    
+    $csvRdp = Join-Path -Path $exportsDir -ChildPath "rdpusers_${Target}_$timestamp.csv"
+    if ($userData.RdpUsers.Count -gt 0) {
+        $userData.RdpUsers | Export-Csv -Path $csvRdp -NoTypeInformation -Encoding UTF8
+    }
+    
+    $csvSessions = Join-Path -Path $exportsDir -ChildPath "sessions_${Target}_$timestamp.csv"
+    if ($userData.Sessions.Count -gt 0) {
+        $userData.Sessions | Export-Csv -Path $csvSessions -NoTypeInformation -Encoding UTF8
+    }
+    
+    return [PSCustomObject]@{
+        MarkdownPath = $mdFile
+        CsvUsersPath = $csvUsers
     }
 }
 
@@ -195,44 +316,155 @@ function Clear-TuiScreen {
     [Console]::Write((Get-TuiForceClearSequence))
 }
 
+function Get-ActiveSessionsList {
+    try {
+        $quserOut = quser 2>&1
+        if ($quserOut -match "No User exists") {
+            return @()
+        } else {
+            $lines = $quserOut -split "`r?`n" | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false }
+            $sessions = for ($i = 1; $i -lt $lines.Count; $i++) {
+                $line = $lines[$i].Trim()
+                $parts = $line -split '\s{2,}'
+                if ($parts.Count -ge 4) {
+                    [PSCustomObject]@{
+                        Username    = $parts[0].Replace(">","").Trim()
+                        SessionName = if ($parts.Count -eq 6) { $parts[1] } else { "" }
+                        Id          = if ($parts.Count -eq 6) { $parts[2] } else { $parts[1] }
+                        State       = if ($parts.Count -eq 6) { $parts[3] } else { $parts[2] }
+                        IdleTime    = if ($parts.Count -eq 6) { $parts[4] } else { $parts[3] }
+                        LogonTime   = if ($parts.Count -eq 6) { $parts[5] } else { $parts[4] }
+                    }
+                }
+            }
+            return @($sessions)
+        }
+    } catch {
+        return @()
+    }
+}
+
+# Structured rendering to avoid ANSI truncation artifacts and stretch bugs
+function Get-FormattedLines {
+    param($userData)
+    $lines = [System.Collections.Generic.List[string]]::new()
+    
+    # 1. User Accounts
+    $lines.Add("=== User Accounts ===")
+    $lines.Add( [string]::Format("{0,-20} {1,-10} {2}", "Name", "Enabled", "Description") )
+    $lines.Add( "-" * 70 )
+    foreach ($u in $userData.Users) {
+        $lines.Add( [string]::Format("{0,-20} {1,-10} {2}", $u.Name, $u.Enabled, $u.Description) )
+    }
+    
+    $lines.Add("")
+    # 2. Administrators Group
+    $lines.Add("=== Administrators Group Members ===")
+    $lines.Add( [string]::Format("{0,-30} {1,-15} {2}", "Name", "Source", "Class") )
+    $lines.Add( "-" * 70 )
+    foreach ($m in $userData.Administrators) {
+        $lines.Add( [string]::Format("{0,-30} {1,-15} {2}", $m.Name, $m.PrincipalSource, $m.ObjectClass) )
+    }
+    
+    $lines.Add("")
+    # 3. Remote Desktop Users Group
+    $lines.Add("=== Remote Desktop Users Group Members ===")
+    if ($userData.RdpUsers.Count -eq 0) {
+        $lines.Add("  (No members found)")
+    } else {
+        $lines.Add( [string]::Format("{0,-30} {1,-15} {2}", "Name", "Source", "Class") )
+        $lines.Add( "-" * 70 )
+        foreach ($m in $userData.RdpUsers) {
+            $lines.Add( [string]::Format("{0,-30} {1,-15} {2}", $m.Name, $m.PrincipalSource, $m.ObjectClass) )
+        }
+    }
+    
+    $lines.Add("")
+    # 4. Active Sessions (quser)
+    $lines.Add("=== Active Sessions (quser) ===")
+    if ($userData.Sessions.Count -eq 0) {
+        $lines.Add("  (No active sessions)")
+    } else {
+        $lines.Add( [string]::Format("{0,-15} {1,-15} {2,-5} {3,-10} {4,-10} {5}", "Username", "SessionName", "ID", "State", "IdleTime", "LogonTime") )
+        $lines.Add( "-" * 75 )
+        foreach ($s in $userData.Sessions) {
+            $lines.Add( [string]::Format("{0,-15} {1,-15} {2,-5} {3,-10} {4,-10} {5}", $s.Username, $s.SessionName, $s.Id, $s.State, $s.IdleTime, $s.LogonTime) )
+        }
+    }
+    
+    return $lines
+}
+
 function Show-ScrollableText {
     param(
         [string]$Title,
-        [string]$Text
+        $userData
     )
     
-    $lines = $Text -split "`r?`n"
     $scrollOffset = 0
+    $exitScroll = $false
     
     try {
-        while ($true) {
+        while (-not $exitScroll) {
             Lock-ViewportToWindow
             $width = Get-UiWidth
             $height = $Host.UI.RawUI.WindowSize.Height
-            $maxVisibleLines = [Math]::Max(5, $height - 8)
+            $maxVisibleLines = [Math]::Max(5, $height - 11)
+            
+            $rawLines = Get-FormattedLines -userData $userData
             
             $frame = New-UiFrame
-            Add-UiFrameBanner -Frame $frame -Title $Title -Subtitle "Use Up/Down arrows/PageUp/PageDown to scroll. Esc to return." -Width $width
+            Add-UiFrameBanner -Frame $frame -Title $Title -Subtitle "Up/Down/PgUp/PgDn to scroll. E to export. Esc to return." -Width $width
             
-            $endIndex = [Math]::Min($scrollOffset + $maxVisibleLines - 1, $lines.Count - 1)
+            # Draw beautiful border around the content area
+            $innerWidth = $width - 4
+            $borderH = (Get-UiGlyph -Name BoxH) * $innerWidth
+            Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxTopLeft)$borderH$(Get-UiGlyph -Name BoxTopRight)$($_C.Reset)$($_C.EraseLn)"
+            
+            $endIndex = [Math]::Min($scrollOffset + $maxVisibleLines - 1, $rawLines.Count - 1)
             for ($i = $scrollOffset; $i -le $endIndex; $i++) {
-                $lineText = $lines[$i]
-                if ($lineText.Length -gt $width) { $lineText = $lineText.Substring(0, $width) }
-                Add-UiFrameLine -Frame $frame -Text "  $($_C.White)$lineText$($_C.Reset)$($_C.EraseLn)"
+                $lineText = $rawLines[$i].Replace("`t", "    ")
+                
+                # Truncate to inner width to prevent terminal stretching/wrapping
+                if ($lineText.Length -gt $innerWidth) {
+                    $lineText = $lineText.Substring(0, $innerWidth)
+                }
+                
+                $padWidth = [Math]::Max(0, $innerWidth - $lineText.Length)
+                $paddedText = $lineText + (' ' * $padWidth)
+                
+                # Colorize headers & highlights safely after truncation
+                $coloredText = $paddedText
+                if ($paddedText -match '^===') {
+                    $coloredText = "$($_C.Info)$($_C.Bold)$paddedText$($_C.Reset)"
+                } elseif ($paddedText -match '^---') {
+                    $coloredText = "$($_C.Dim)$paddedText$($_C.Reset)"
+                } else {
+                    $coloredText = $coloredText -replace '\bTrue\b', "$($_C.OK)True$($_C.Reset)"
+                    $coloredText = $coloredText -replace '\bFalse\b', "$($_C.Fail)False$($_C.Reset)"
+                }
+                
+                Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset) $coloredText $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
             }
             
+            # Pad empty vertical space
             $printedCount = $endIndex - $scrollOffset + 1
             if ($printedCount -lt $maxVisibleLines) {
                 for ($i = $printedCount; $i -lt $maxVisibleLines; $i++) {
-                    Add-UiFrameLine -Frame $frame -Text "$($_C.EraseLn)"
+                    $emptyPad = ' ' * $innerWidth
+                    Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset) $emptyPad $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
                 }
             }
             
+            Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxBottomLeft)$borderH$(Get-UiGlyph -Name BoxBottomRight)$($_C.Reset)$($_C.EraseLn)"
             Add-UiFrameLine -Frame $frame
-            $scrollInfo = "Line $($scrollOffset + 1) of $($lines.Count)"
+            
+            $scrollInfo = "Line $($scrollOffset + 1) of $($rawLines.Count)"
             $segments = @(
                 New-UiShortcutSegment -Text "$(Get-UiGlyph -Name Up)$(Get-UiGlyph -Name Down)" -Color $_C.White
                 New-UiShortcutSegment -Text " Scroll ($scrollInfo)   " -Color $_C.Dim
+                New-UiShortcutSegment -Text "E" -Color $_C.Gold
+                New-UiShortcutSegment -Text " = export   " -Color $_C.Dim
                 New-UiShortcutSegment -Text "Esc" -Color $_C.Fail
                 New-UiShortcutSegment -Text " = back" -Color $_C.Dim
             )
@@ -242,12 +474,28 @@ function Show-ScrollableText {
             $key = Read-ConsoleKey
             switch ($key.Key) {
                 'UpArrow' { $scrollOffset = [Math]::Max(0, $scrollOffset - 1) }
-                'DownArrow' { $scrollOffset = [Math]::Min([Math]::Max(0, $lines.Count - $maxVisibleLines), $scrollOffset + 1) }
+                'DownArrow' { $scrollOffset = [Math]::Min([Math]::Max(0, $rawLines.Count - $maxVisibleLines), $scrollOffset + 1) }
                 'PageUp' { $scrollOffset = [Math]::Max(0, $scrollOffset - $maxVisibleLines) }
-                'PageDown' { $scrollOffset = [Math]::Min([Math]::Max(0, $lines.Count - $maxVisibleLines), $scrollOffset + $maxVisibleLines) }
+                'PageDown' { $scrollOffset = [Math]::Min([Math]::Max(0, $rawLines.Count - $maxVisibleLines), $scrollOffset + $maxVisibleLines) }
                 'Home' { $scrollOffset = 0 }
-                'End' { $scrollOffset = [Math]::Max(0, $lines.Count - $maxVisibleLines) }
-                'Escape' { break }
+                'End' { $scrollOffset = [Math]::Max(0, $rawLines.Count - $maxVisibleLines) }
+                'Escape' { $exitScroll = $true }
+                'E' {
+                    $targetName = if ($isRemote) { $ComputerName } else { $env:COMPUTERNAME }
+                    $exportRes = Export-UserData -Target $targetName -userData $userData
+                    
+                    Clear-TuiScreen
+                    $bannerFrame = New-UiFrame
+                    Add-UiFrameBanner -Frame $bannerFrame -Title "Export Complete" -Subtitle "Saved to exports folder" -Width $width
+                    Add-UiFrameLine -Frame $bannerFrame
+                    Add-UiFrameLine -Frame $bannerFrame -Text "  ✅ Exported Markdown: $($exportRes.MarkdownPath)$($_C.EraseLn)"
+                    Add-UiFrameLine -Frame $bannerFrame -Text "  ✅ Exported CSV Files: $($exportRes.CsvUsersPath)$($_C.EraseLn)"
+                    Add-UiFrameLine -Frame $bannerFrame
+                    Add-UiFrameLine -Frame $bannerFrame -Text "  Press any key to return..."
+                    Write-UiFrame -Frame $bannerFrame
+                    $null = Read-ConsoleKey
+                    $script:RequestForceClear = $true
+                }
                 'ResizeEvent' { continue }
             }
         }
@@ -261,35 +509,31 @@ function Show-LocalUsersFlow {
     Clear-Host
     Write-Host "Querying local user information..." -ForegroundColor Cyan
     
-    $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description | Out-String
+    $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description
     $adminMembers = try {
-        Get-LocalGroupMember -Group "Administrators" | Select-Object Name, PrincipalSource, ObjectClass | Out-String
-    } catch { "Error or no members found." }
+        Get-LocalGroupMember -Group "Administrators" | Select-Object Name, PrincipalSource, ObjectClass
+    } catch { @() }
     $rdpMembers = try {
-        Get-LocalGroupMember -Group "Remote Desktop Users" | Select-Object Name, PrincipalSource, ObjectClass | Out-String
-    } catch { "Error or no members found." }
-    $activeSessions = try {
-        quser 2>&1 | Out-String
-    } catch { "No active sessions." }
+        Get-LocalGroupMember -Group "Remote Desktop Users" | Select-Object Name, PrincipalSource, ObjectClass
+    } catch { @() }
+    $activeSessions = Get-ActiveSessionsList
     
-    $sb = [System.Text.StringBuilder]::new()
-    $null = $sb.AppendLine("=== Local User Accounts ===")
-    $null = $sb.AppendLine($localUsers)
-    $null = $sb.AppendLine("=== Administrators Group Members ===")
-    $null = $sb.AppendLine($adminMembers)
-    $null = $sb.AppendLine("=== Remote Desktop Users Group Members ===")
-    $null = $sb.AppendLine($rdpMembers)
-    $null = $sb.AppendLine("=== Active Sessions (quser) ===")
-    $null = $sb.AppendLine($activeSessions)
+    $userData = [PSCustomObject]@{
+        Users          = $localUsers
+        Administrators = $adminMembers
+        RdpUsers       = $rdpMembers
+        Sessions       = $activeSessions
+    }
     
     Initialize-TuiHost
-    Show-ScrollableText -Title "Local User Info: $env:COMPUTERNAME" -Text ($sb.ToString())
+    Show-ScrollableText -Title "Local User Info: $env:COMPUTERNAME" -userData $userData
 }
 
 function Run-RemoteUsersFlow {
     param(
         [string]$TargetComputer,
-        [string]$TargetName
+        [string]$TargetName,
+        [string]$DefaultUser = "Administrator"
     )
     
     Restore-TuiHost
@@ -299,9 +543,9 @@ function Run-RemoteUsersFlow {
     Add-ToTrustedHosts -Target $TargetComputer
     
     Write-Host "`nPlease specify target PC credentials:" -ForegroundColor Yellow
-    Write-Host "  Username [default: Administrator]: " -NoNewline -ForegroundColor White
+    Write-Host "  Username [default: $DefaultUser]: " -NoNewline -ForegroundColor White
     $inputUser = Read-Host
-    $username = if ([string]::IsNullOrWhiteSpace($inputUser)) { "Administrator" } else { $inputUser }
+    $username = if ([string]::IsNullOrWhiteSpace($inputUser)) { $DefaultUser } else { $inputUser }
     
     Write-Host "  Password (press Enter if blank): " -NoNewline -ForegroundColor White
     $passwordSecure = Read-Host -AsSecureString
@@ -311,22 +555,49 @@ function Run-RemoteUsersFlow {
     
     Write-Host "`nEstablishing WinRM session..." -ForegroundColor White
     $session = $null
-    $textOutput = ""
+    $userData = $null
+    $connectionError = $null
     try {
         $session = New-PSSession @sessionParams -ErrorAction Stop
         Write-Host "Session established. Querying user accounts..." -ForegroundColor Green
         
         $scriptBlock = {
-            $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description | Out-String
+            function Get-RemoteActiveSessions {
+                try {
+                    $quserOut = quser 2>&1
+                    if ($quserOut -match "No User exists") {
+                        return @()
+                    } else {
+                        $lines = $quserOut -split "`r?`n" | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false }
+                        $sessions = for ($i = 1; $i -lt $lines.Count; $i++) {
+                            $line = $lines[$i].Trim()
+                            $parts = $line -split '\s{2,}'
+                            if ($parts.Count -ge 4) {
+                                [PSCustomObject]@{
+                                    Username    = $parts[0].Replace(">","").Trim()
+                                    SessionName = if ($parts.Count -eq 6) { $parts[1] } else { "" }
+                                    Id          = if ($parts.Count -eq 6) { $parts[2] } else { $parts[1] }
+                                    State       = if ($parts.Count -eq 6) { $parts[3] } else { $parts[2] }
+                                    IdleTime    = if ($parts.Count -eq 6) { $parts[4] } else { $parts[3] }
+                                    LogonTime   = if ($parts.Count -eq 6) { $parts[5] } else { $parts[4] }
+                                }
+                            }
+                        }
+                        return @($sessions)
+                    }
+                } catch {
+                    return @()
+                }
+            }
+            
+            $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description
             $adminMembers = try {
-                Get-LocalGroupMember -Group "Administrators" | Select-Object Name, PrincipalSource, ObjectClass | Out-String
-            } catch { "Error or no members found." }
+                Get-LocalGroupMember -Group "Administrators" | Select-Object Name, PrincipalSource, ObjectClass
+            } catch { @() }
             $rdpMembers = try {
-                Get-LocalGroupMember -Group "Remote Desktop Users" | Select-Object Name, PrincipalSource, ObjectClass | Out-String
-            } catch { "Error or no members found." }
-            $activeSessions = try {
-                quser 2>&1 | Out-String
-            } catch { "No active sessions." }
+                Get-LocalGroupMember -Group "Remote Desktop Users" | Select-Object Name, PrincipalSource, ObjectClass
+            } catch { @() }
+            $activeSessions = Get-RemoteActiveSessions
             
             return [PSCustomObject]@{
                 Users          = $localUsers
@@ -336,28 +607,31 @@ function Run-RemoteUsersFlow {
             }
         }
         
-        $remoteData = Invoke-Command -Session $session -ScriptBlock $scriptBlock -ErrorAction Stop
+        $userData = Invoke-Command -Session $session -ScriptBlock $scriptBlock -ErrorAction Stop
         
-        $sb = [System.Text.StringBuilder]::new()
-        $null = $sb.AppendLine("=== Remote User Accounts ===")
-        $null = $sb.AppendLine($remoteData.Users)
-        $null = $sb.AppendLine("=== Administrators Group Members ===")
-        $null = $sb.AppendLine($remoteData.Administrators)
-        $null = $sb.AppendLine("=== Remote Desktop Users Group Members ===")
-        $null = $sb.AppendLine($remoteData.RdpUsers)
-        $null = $sb.AppendLine("=== Active Sessions (quser) ===")
-        $null = $sb.AppendLine($remoteData.Sessions)
-        
-        $textOutput = $sb.ToString()
+        # Save connection to history on success
+        Add-ConnectionHistoryEntry -ComputerName $TargetComputer -UserName $username
         
     } catch {
-        $textOutput = "❌ Connection failed or error retrieving data:`n`n$_"
+        $connectionError = $_.Exception.Message
     } finally {
         if ($null -ne $session) { Remove-PSSession $session }
     }
     
     Initialize-TuiHost
-    Show-ScrollableText -Title "Remote User Info: $TargetName" -Text $textOutput
+    if ($null -ne $connectionError) {
+        $frame = New-UiFrame
+        Add-UiFrameBanner -Frame $frame -Title "Connection Error" -Subtitle "Could not query target: $TargetName" -Width (Get-UiWidth)
+        Add-UiFrameLine -Frame $frame
+        Add-UiFrameLine -Frame $frame -Text "  ❌ WinRM Connection failed:$($_C.EraseLn)"
+        Add-UiFrameLine -Frame $frame -Text "  $connectionError$($_C.EraseLn)"
+        Add-UiFrameLine -Frame $frame
+        Add-UiFrameLine -Frame $frame -Text "  Press any key to return..."
+        Write-UiFrame -Frame $frame
+        $null = Read-ConsoleKey
+    } else {
+        Show-ScrollableText -Title "Remote User Info: $TargetName" -userData $userData
+    }
 }
 
 function Invoke-LanScanFlow {
@@ -411,18 +685,52 @@ function Connect-RemotePcFlow {
 
 function Invoke-NetUsersTui {
     Initialize-TuiHost
-    $menuOptions = @(
-        "Check Local PC Users"
-        "Scan LAN for Manageable PCs (WinRM 5985) [Ctrl+L]"
-        "Connect to Remote PC (IP/Hostname)..."
-        "Exit"
-    )
     $selectedIndex = 0
     
     try {
         while ($true) {
             Lock-ViewportToWindow
             $width = Get-UiWidth
+            
+            # Load dynamic history
+            $history = Get-ConnectionHistory
+            
+            # Rebuild menu items and actions list dynamically
+            $menuOptions = [System.Collections.Generic.List[string]]::new()
+            $actions = [System.Collections.Generic.List[PSCustomObject]]::new()
+            
+            $menuOptions.Add("Check Local PC Users")
+            $actions.Add([PSCustomObject]@{ Type = 'Local'; Label = "Check Local PC Users" })
+            
+            $menuOptions.Add("Scan LAN for Manageable PCs (WinRM 5985) [Ctrl+L]")
+            $actions.Add([PSCustomObject]@{ Type = 'Scan'; Label = "Scan LAN for Manageable PCs (WinRM 5985) [Ctrl+L]" })
+            
+            $menuOptions.Add("Connect to Remote PC (IP/Hostname)...")
+            $actions.Add([PSCustomObject]@{ Type = 'ConnectNew'; Label = "Connect to Remote PC (IP/Hostname)..." })
+            
+            if ($history.Count -gt 0) {
+                $menuOptions.Add("--- Connection History ---")
+                $actions.Add([PSCustomObject]@{ Type = 'Header'; Label = "--- Connection History ---" })
+                
+                foreach ($h in $history) {
+                    $menuOptions.Add("  $($h.ComputerName) (user: $($h.UserName))")
+                    $actions.Add([PSCustomObject]@{ Type = 'HistoryEntry'; Data = $h; Label = "  $($h.ComputerName) (user: $($h.UserName))" })
+                }
+            }
+            
+            $menuOptions.Add("Exit")
+            $actions.Add([PSCustomObject]@{ Type = 'Exit'; Label = "Exit" })
+            
+            # Guard bounds
+            if ($selectedIndex -ge $menuOptions.Count) {
+                $selectedIndex = $menuOptions.Count - 1
+            }
+            
+            # Ensure not pointing on a non-selectable Header option
+            if ($actions[$selectedIndex].Type -eq 'Header') {
+                $selectedIndex++
+            }
+            
             $frame = New-UiFrame
             Add-UiFrameBanner -Frame $frame -Title "netuser TUI Control Panel" -Subtitle "Local & Remote User Check Utility" -Width $width
             Add-UiFrameSection -Frame $frame -Title "Main Menu" -Width $width
@@ -431,13 +739,18 @@ function Invoke-NetUsersTui {
                 if ($i -eq $selectedIndex) {
                     Add-UiFrameLine -Frame $frame -Text "$($_C.SelBg)$($_C.SelFg)$($_C.Bold)  $(Get-UiGlyph -Name SelectionArrow) $($menuOptions[$i]) $($_C.Reset)$($_C.EraseLn)"
                 } else {
-                    Add-UiFrameLine -Frame $frame -Text "    $($_C.White)$($menuOptions[$i])$($_C.Reset)$($_C.EraseLn)"
+                    if ($actions[$i].Type -eq 'Header') {
+                        Add-UiFrameLine -Frame $frame -Text "  $($_C.Info)$($menuOptions[$i])$($_C.Reset)$($_C.EraseLn)"
+                    } elseif ($actions[$i].Type -eq 'HistoryEntry') {
+                        Add-UiFrameLine -Frame $frame -Text "    $($_C.White)$($menuOptions[$i])$($_C.Reset)$($_C.EraseLn)"
+                    } else {
+                        Add-UiFrameLine -Frame $frame -Text "    $($_C.White)$($menuOptions[$i])$($_C.Reset)$($_C.EraseLn)"
+                    }
                 }
             }
             
             Add-UiFrameLine -Frame $frame
             
-            # Draw shortcut segments manually
             $segments = @(
                 New-UiShortcutSegment -Text "$(Get-UiGlyph -Name Up)$(Get-UiGlyph -Name Down)" -Color $_C.White
                 New-UiShortcutSegment -Text ' navigate   ' -Color $_C.Dim
@@ -461,16 +774,30 @@ function Invoke-NetUsersTui {
             }
             
             switch ($key.Key) {
-                'UpArrow' { $selectedIndex = [Math]::Max(0, $selectedIndex - 1) }
-                'DownArrow' { $selectedIndex = [Math]::Min($menuOptions.Count - 1, $selectedIndex + 1) }
+                'UpArrow' {
+                    $selectedIndex = [Math]::Max(0, $selectedIndex - 1)
+                    if ($actions[$selectedIndex].Type -eq 'Header') {
+                        $selectedIndex = [Math]::Max(0, $selectedIndex - 1)
+                    }
+                }
+                'DownArrow' {
+                    $selectedIndex = [Math]::Min($menuOptions.Count - 1, $selectedIndex + 1)
+                    if ($actions[$selectedIndex].Type -eq 'Header') {
+                        $selectedIndex = [Math]::Min($menuOptions.Count - 1, $selectedIndex + 1)
+                    }
+                }
                 'Escape' { return }
                 'ResizeEvent' { continue }
                 'Enter' {
-                    switch ($selectedIndex) {
-                        0 { Show-LocalUsersFlow }
-                        1 { Invoke-LanScanFlow }
-                        2 { Connect-RemotePcFlow }
-                        3 { return }
+                    $action = $actions[$selectedIndex]
+                    switch ($action.Type) {
+                        'Local' { Show-LocalUsersFlow }
+                        'Scan' { Invoke-LanScanFlow }
+                        'ConnectNew' { Connect-RemotePcFlow }
+                        'HistoryEntry' {
+                            Run-RemoteUsersFlow -TargetComputer $action.Data.ComputerName -TargetName $action.Data.ComputerName -DefaultUser $action.Data.UserName
+                        }
+                        'Exit' { return }
                     }
                     $script:RequestForceClear = $true
                 }
@@ -511,30 +838,7 @@ function Show-LocalUsersCli {
             Write-Host "No members found or error querying group." -ForegroundColor Yellow
         }
         
-        $activeSessions = try {
-            $quserOut = quser 2>&1
-            if ($quserOut -match "No User exists") {
-                @()
-            } else {
-                $lines = $quserOut -split "`r?`n" | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false }
-                $sessions = for ($i = 1; $i -lt $lines.Count; $i++) {
-                    $line = $lines[$i].Trim()
-                    $parts = $line -split '\s{2,}'
-                    if ($parts.Count -ge 4) {
-                        [PSCustomObject]@{
-                            Username    = $parts[0].Replace(">","").Trim()
-                            SessionName = if ($parts.Count -eq 6) { $parts[1] } else { "" }
-                            Id          = if ($parts.Count -eq 6) { $parts[2] } else { $parts[1] }
-                            State       = if ($parts.Count -eq 6) { $parts[3] } else { $parts[2] }
-                            IdleTime    = if ($parts.Count -eq 6) { $parts[4] } else { $parts[3] }
-                            LogonTime   = if ($parts.Count -eq 6) { $parts[5] } else { $parts[4] }
-                        }
-                    }
-                }
-                $sessions
-            }
-        } catch { @() }
-        
+        $activeSessions = Get-ActiveSessionsList
         Write-Host "`n=== Active Sessions (quser) ===" -ForegroundColor Cyan
         if ($activeSessions.Count -gt 0) {
             $activeSessions | Format-Table -AutoSize
@@ -586,6 +890,34 @@ function Show-RemoteUsersCli {
     Write-Host "`nQuerying user accounts, group memberships, and active sessions..." -ForegroundColor White
     try {
         $scriptBlock = {
+            function Get-RemoteActiveSessions {
+                try {
+                    $quserOut = quser 2>&1
+                    if ($quserOut -match "No User exists") {
+                        return @()
+                    } else {
+                        $lines = $quserOut -split "`r?`n" | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false }
+                        $sessions = for ($i = 1; $i -lt $lines.Count; $i++) {
+                            $line = $lines[$i].Trim()
+                            $parts = $line -split '\s{2,}'
+                            if ($parts.Count -ge 4) {
+                                [PSCustomObject]@{
+                                    Username    = $parts[0].Replace(">","").Trim()
+                                    SessionName = if ($parts.Count -eq 6) { $parts[1] } else { "" }
+                                    Id          = if ($parts.Count -eq 6) { $parts[2] } else { $parts[1] }
+                                    State       = if ($parts.Count -eq 6) { $parts[3] } else { $parts[2] }
+                                    IdleTime    = if ($parts.Count -eq 6) { $parts[4] } else { $parts[3] }
+                                    LogonTime   = if ($parts.Count -eq 6) { $parts[5] } else { $parts[4] }
+                                }
+                            }
+                        }
+                        return @($sessions)
+                    }
+                } catch {
+                    return @()
+                }
+            }
+            
             $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description
             
             $adminMembers = try {
@@ -596,29 +928,7 @@ function Show-RemoteUsersCli {
                 Get-LocalGroupMember -Group "Remote Desktop Users" | Select-Object Name, PrincipalSource, ObjectClass
             } catch { @() }
             
-            $activeSessions = try {
-                $quserOut = quser 2>&1
-                if ($quserOut -match "No User exists") {
-                    @()
-                } else {
-                    $lines = $quserOut -split "`r?`n" | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false }
-                    $sessions = for ($i = 1; $i -lt $lines.Count; $i++) {
-                        $line = $lines[$i].Trim()
-                        $parts = $line -split '\s{2,}'
-                        if ($parts.Count -ge 4) {
-                            [PSCustomObject]@{
-                                Username    = $parts[0].Replace(">","").Trim()
-                                SessionName = if ($parts.Count -eq 6) { $parts[1] } else { "" }
-                                Id          = if ($parts.Count -eq 6) { $parts[2] } else { $parts[1] }
-                                State       = if ($parts.Count -eq 6) { $parts[3] } else { $parts[2] }
-                                IdleTime    = if ($parts.Count -eq 6) { $parts[4] } else { $parts[3] }
-                                LogonTime   = if ($parts.Count -eq 6) { $parts[5] } else { $parts[4] }
-                            }
-                        }
-                    }
-                    $sessions
-                }
-            } catch { @() }
+            $activeSessions = Get-RemoteActiveSessions
             
             return [PSCustomObject]@{
                 Users          = $localUsers
