@@ -50,3 +50,14 @@ Durable rules, guidelines, and decision logs for the netuser query and verificat
   - [PROJECT_RULES.md](file:///d:/Users/joty79/scripts/netuser/PROJECT_RULES.md)
   - [CHANGELOG.md](file:///d:/Users/joty79/scripts/netuser/CHANGELOG.md)
 - **Validation/tests run**: Verified network filtering with active gateway identities and mock history structures.
+
+### Entry - 2026-06-19 (TUI Escape Sequence Typo Correction)
+- **Date**: 2026-06-19
+- **Problem**: The string `_C.Reset)` was appearing literally at the left border of every scrollable line.
+- **Root cause**: A double dollar `$$` was typed before `_C.Reset` inside the double-quoted string. In PowerShell, `$$` escapes to a literal `$` rather than evaluating the variable expression.
+- **Guardrail/rule**: Always review variable evaluation syntax in double-quoted strings, especially for boundary escapes.
+- **Files affected**:
+  - [Get-NetUsers.ps1](file:///d:/Users/joty79/scripts/netuser/Get-NetUsers.ps1)
+  - [PROJECT_RULES.md](file:///d:/Users/joty79/scripts/netuser/PROJECT_RULES.md)
+  - [CHANGELOG.md](file:///d:/Users/joty79/scripts/netuser/CHANGELOG.md)
+- **Validation/tests run**: Verified syntax and visually checked console frame boundaries.

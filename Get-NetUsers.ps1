@@ -519,7 +519,7 @@ function Show-ScrollableText {
                     $coloredText = $coloredText -replace '\bFalse\b', "$($_C.Fail)False$($_C.Reset)"
                 }
                 
-                Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$$_C.Reset) $coloredText $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
+                Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset) $coloredText $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
             }
             
             # Pad empty vertical space
@@ -527,7 +527,7 @@ function Show-ScrollableText {
             if ($printedCount -lt $maxVisibleLines) {
                 for ($i = $printedCount; $i -lt $maxVisibleLines; $i++) {
                     $emptyPad = ' ' * $innerWidth
-                    Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$$_C.Reset) $emptyPad $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
+                    Add-UiFrameLine -Frame $frame -Text "$($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset) $emptyPad $($_C.H2)$(Get-UiGlyph -Name BoxV)$($_C.Reset)$($_C.EraseLn)"
                 }
             }
             

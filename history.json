@@ -1,5 +1,16 @@
-{
-  "ComputerName": "192.168.1.47",
-  "UserName": "cbx_t",
-  "LastConnected": "2026-06-19 19:35:37"
-}
+[
+  {
+    "ComputerName": "192.168.1.5",
+    "IPAddress": "192.168.1.5",
+    "UserName": "se",
+    "NetworkId": "datacomputer2|C4-27-28-4C-C0-88|192.168.1",
+    "LastConnected": "2026-06-19 19:39:40"
+  },
+  {
+    "ComputerName": "192.168.1.47",
+    "IPAddress": "192.168.1.47",
+    "UserName": "cbx_t",
+    "NetworkId": "",
+    "LastConnected": "2026-06-19 19:35:37"
+  }
+]
