@@ -4,6 +4,13 @@
 
 Η μορφή βασίζεται στο [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.0] - 2026-06-22
+
+### Added
+- Προσθήκη υποστήριξης για ανίχνευση και ανάκτηση στοιχείων Microsoft Account (MSA).
+- Εξαγωγή του email address (μέσω των StoredIdentities της Registry) και του PrincipalSource (Local ή MicrosoftAccount).
+- Εμφάνιση του πλήρους ονόματος (FullName) και του email των χρηστών στο TUI, στο CLI και στις αναφορές εξαγωγής (Markdown / CSV).
+
 ## [1.3.0] - 2026-06-19
 
 ### Added

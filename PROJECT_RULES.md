@@ -11,6 +11,17 @@ Durable rules, guidelines, and decision logs for the netuser query and verificat
 
 ## Decision Log
 
+### Entry - 2026-06-22 (Microsoft Account Integration & Email Mapping)
+- **Date**: 2026-06-22
+- **Problem**: Microsoft Accounts (MSA) on Windows are mapped to local user handles, making the email and MSA-specific metadata invisible to standard legacy tools like `net user`. Additionally, retrieving linked email addresses requires parsing `IdentityCRL` in `HKEY_USERS` or searching local cached logon providers in `HKLM`.
+- **Root cause**: The Windows SAM database only stores local account definitions, not Microsoft Account identity cloud bindings.
+- **Guardrail/rule**: Enhance user queries to fetch `PrincipalSource`, `FullName`, and `Email` via a dual registry check (mapping active profile SIDs in `HKEY_USERS` and falling back to matching cached display names in `HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache`).
+- **Files affected**:
+  - [Get-NetUsers.ps1](file:///d:/Users/joty79/scripts/netuser/Get-NetUsers.ps1)
+  - [PROJECT_RULES.md](file:///d:/Users/joty79/scripts/netuser/PROJECT_RULES.md)
+  - [CHANGELOG.md](file:///d:/Users/joty79/scripts/netuser/CHANGELOG.md)
+- **Validation/tests run**: Validated via local run and remote query to hyper-v win11 sandbox.
+
 ### Entry - 2026-06-19 (Project Creation & User Check Script)
 - **Date**: 2026-06-19
 - **Problem**: Need to query local and remote PC user accounts, group memberships, and active sessions in a standardized manner.

@@ -173,10 +173,10 @@ function Export-UserData {
     $null = $sb.AppendLine()
     
     $null = $sb.AppendLine("## User Accounts")
-    $null = $sb.AppendLine("| Name | Enabled | Description |")
-    $null = $sb.AppendLine("|---|---|---|")
+    $null = $sb.AppendLine("| Name | Enabled | Source | Full Name | Email | Description |")
+    $null = $sb.AppendLine("|---|---|---|---|---|---|")
     foreach ($u in $userData.Users) {
-        $null = $sb.AppendLine("| $($u.Name) | $($u.Enabled) | $($u.Description) |")
+        $null = $sb.AppendLine("| $($u.Name) | $($u.Enabled) | $($u.PrincipalSource) | $($u.FullName) | $($u.Email) | $($u.Description) |")
     }
     $null = $sb.AppendLine()
     
@@ -426,10 +426,15 @@ function Get-FormattedLines {
     
     # 1. User Accounts
     $lines.Add("=== User Accounts ===")
-    $lines.Add( [string]::Format("{0,-20} {1,-10} {2}", "Name", "Enabled", "Description") )
-    $lines.Add( "-" * 70 )
+    $lines.Add( [string]::Format("{0,-12} {1,-8} {2,-16} {3,-20} {4}", "Name", "Enabled", "Source", "Full Name", "Email") )
+    $lines.Add( "-" * 80 )
     foreach ($u in $userData.Users) {
-        $lines.Add( [string]::Format("{0,-20} {1,-10} {2}", $u.Name, $u.Enabled, $u.Description) )
+        $emailStr = if ($u.Email) { $u.Email } else { "" }
+        $fullNameStr = if ($u.FullName) { $u.FullName } else { "" }
+        $lines.Add( [string]::Format("{0,-12} {1,-8} {2,-16} {3,-20} {4}", $u.Name, $u.Enabled, $u.PrincipalSource, $fullNameStr, $emailStr) )
+        if ($u.Description) {
+            $lines.Add( "  └─ Description: $($u.Description)" )
+        }
     }
     
     $lines.Add("")
@@ -584,7 +589,48 @@ function Show-LocalUsersFlow {
     Clear-Host
     Write-Host "Querying local user information..." -ForegroundColor Cyan
     
-    $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description
+    function Get-ExtendedLocalUsers {
+        $msaEmails = @{}
+        try {
+            $identities = Get-ChildItem -Path "Registry::HKEY_USERS\*\Software\Microsoft\IdentityCRL\StoredIdentities\*" -ErrorAction SilentlyContinue
+            foreach ($id in $identities) {
+                if ($id.PSPath -match 'HKEY_USERS\\(S-1-5-21-[^\\]+)\\Software') {
+                    $userSid = $Matches[1]
+                    $msaEmails[$userSid] = $id.PSChildName
+                }
+            }
+        } catch {}
+        try {
+            $logonCache = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache\*\Sid2Name\*" -ErrorAction SilentlyContinue
+            foreach ($item in $logonCache) {
+                $props = Get-ItemProperty -LiteralPath $item.PSPath -ErrorAction SilentlyContinue
+                if ($props -and $props.IdentityName -and $props.DisplayName) {
+                    if (-not $msaEmails.ContainsKey($props.DisplayName)) {
+                        $msaEmails[$props.DisplayName] = $props.IdentityName
+                    }
+                }
+            }
+        } catch {}
+        $users = Get-LocalUser | ForEach-Object {
+            $email = ""
+            if ($msaEmails.ContainsKey($_.SID.Value)) {
+                $email = $msaEmails[$_.SID.Value]
+            } elseif ($msaEmails.ContainsKey($_.FullName)) {
+                $email = $msaEmails[$_.FullName]
+            }
+            [PSCustomObject]@{
+                Name            = $_.Name
+                Enabled         = $_.Enabled
+                PrincipalSource = $_.PrincipalSource
+                FullName        = $_.FullName
+                Email           = $email
+                Description     = $_.Description
+            }
+        }
+        return $users
+    }
+
+    $localUsers = Get-ExtendedLocalUsers
     $adminMembers = try {
         Get-LocalGroupMember -Group "Administrators" | Select-Object Name, PrincipalSource, ObjectClass
     } catch { @() }
@@ -665,7 +711,48 @@ function Run-RemoteUsersFlow {
                 }
             }
             
-            $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description
+            function Get-ExtendedLocalUsers {
+                $msaEmails = @{}
+                try {
+                    $identities = Get-ChildItem -Path "Registry::HKEY_USERS\*\Software\Microsoft\IdentityCRL\StoredIdentities\*" -ErrorAction SilentlyContinue
+                    foreach ($id in $identities) {
+                        if ($id.PSPath -match 'HKEY_USERS\\(S-1-5-21-[^\\]+)\\Software') {
+                            $userSid = $Matches[1]
+                            $msaEmails[$userSid] = $id.PSChildName
+                        }
+                    }
+                } catch {}
+                try {
+                    $logonCache = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache\*\Sid2Name\*" -ErrorAction SilentlyContinue
+                    foreach ($item in $logonCache) {
+                        $props = Get-ItemProperty -LiteralPath $item.PSPath -ErrorAction SilentlyContinue
+                        if ($props -and $props.IdentityName -and $props.DisplayName) {
+                            if (-not $msaEmails.ContainsKey($props.DisplayName)) {
+                                $msaEmails[$props.DisplayName] = $props.IdentityName
+                            }
+                        }
+                    }
+                } catch {}
+                $users = Get-LocalUser | ForEach-Object {
+                    $email = ""
+                    if ($msaEmails.ContainsKey($_.SID.Value)) {
+                        $email = $msaEmails[$_.SID.Value]
+                    } elseif ($msaEmails.ContainsKey($_.FullName)) {
+                        $email = $msaEmails[$_.FullName]
+                    }
+                    [PSCustomObject]@{
+                        Name            = $_.Name
+                        Enabled         = $_.Enabled
+                        PrincipalSource = $_.PrincipalSource
+                        FullName        = $_.FullName
+                        Email           = $email
+                        Description     = $_.Description
+                    }
+                }
+                return $users
+            }
+
+            $localUsers = Get-ExtendedLocalUsers
             $adminMembers = try {
                 Get-LocalGroupMember -Group "Administrators" | Select-Object Name, PrincipalSource, ObjectClass
             } catch { @() }
@@ -898,7 +985,47 @@ function Show-LocalUsersCli {
     Write-Host "`nQuerying local user accounts, group memberships, and active sessions..." -ForegroundColor White
     
     try {
-        $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description
+        function Get-ExtendedLocalUsers {
+            $msaEmails = @{}
+            try {
+                $identities = Get-ChildItem -Path "Registry::HKEY_USERS\*\Software\Microsoft\IdentityCRL\StoredIdentities\*" -ErrorAction SilentlyContinue
+                foreach ($id in $identities) {
+                    if ($id.PSPath -match 'HKEY_USERS\\(S-1-5-21-[^\\]+)\\Software') {
+                        $userSid = $Matches[1]
+                        $msaEmails[$userSid] = $id.PSChildName
+                    }
+                }
+            } catch {}
+            try {
+                $logonCache = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache\*\Sid2Name\*" -ErrorAction SilentlyContinue
+                foreach ($item in $logonCache) {
+                    $props = Get-ItemProperty -LiteralPath $item.PSPath -ErrorAction SilentlyContinue
+                    if ($props -and $props.IdentityName -and $props.DisplayName) {
+                        if (-not $msaEmails.ContainsKey($props.DisplayName)) {
+                            $msaEmails[$props.DisplayName] = $props.IdentityName
+                        }
+                    }
+                }
+            } catch {}
+            $users = Get-LocalUser | ForEach-Object {
+                $email = ""
+                if ($msaEmails.ContainsKey($_.SID.Value)) {
+                    $email = $msaEmails[$_.SID.Value]
+                } elseif ($msaEmails.ContainsKey($_.FullName)) {
+                    $email = $msaEmails[$_.FullName]
+                }
+                [PSCustomObject]@{
+                    Name            = $_.Name
+                    Enabled         = $_.Enabled
+                    PrincipalSource = $_.PrincipalSource
+                    FullName        = $_.FullName
+                    Email           = $email
+                    Description     = $_.Description
+                }
+            }
+            return $users
+        }
+        $localUsers = Get-ExtendedLocalUsers
         Write-Host "`n=== Local User Accounts ===" -ForegroundColor Cyan
         $localUsers | Format-Table -AutoSize
         
@@ -1002,7 +1129,48 @@ function Show-RemoteUsersCli {
                 }
             }
             
-            $localUsers = Get-LocalUser | Select-Object Name, Enabled, Description
+            function Get-ExtendedLocalUsers {
+                $msaEmails = @{}
+                try {
+                    $identities = Get-ChildItem -Path "Registry::HKEY_USERS\*\Software\Microsoft\IdentityCRL\StoredIdentities\*" -ErrorAction SilentlyContinue
+                    foreach ($id in $identities) {
+                        if ($id.PSPath -match 'HKEY_USERS\\(S-1-5-21-[^\\]+)\\Software') {
+                            $userSid = $Matches[1]
+                            $msaEmails[$userSid] = $id.PSChildName
+                        }
+                    }
+                } catch {}
+                try {
+                    $logonCache = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\IdentityStore\LogonCache\*\Sid2Name\*" -ErrorAction SilentlyContinue
+                    foreach ($item in $logonCache) {
+                        $props = Get-ItemProperty -LiteralPath $item.PSPath -ErrorAction SilentlyContinue
+                        if ($props -and $props.IdentityName -and $props.DisplayName) {
+                            if (-not $msaEmails.ContainsKey($props.DisplayName)) {
+                                $msaEmails[$props.DisplayName] = $props.IdentityName
+                            }
+                        }
+                    }
+                } catch {}
+                $users = Get-LocalUser | ForEach-Object {
+                    $email = ""
+                    if ($msaEmails.ContainsKey($_.SID.Value)) {
+                        $email = $msaEmails[$_.SID.Value]
+                    } elseif ($msaEmails.ContainsKey($_.FullName)) {
+                        $email = $msaEmails[$_.FullName]
+                    }
+                    [PSCustomObject]@{
+                        Name            = $_.Name
+                        Enabled         = $_.Enabled
+                        PrincipalSource = $_.PrincipalSource
+                        FullName        = $_.FullName
+                        Email           = $email
+                        Description     = $_.Description
+                    }
+                }
+                return $users
+            }
+
+            $localUsers = Get-ExtendedLocalUsers
             
             $adminMembers = try {
                 Get-LocalGroupMember -Group "Administrators" | Select-Object Name, PrincipalSource, ObjectClass
